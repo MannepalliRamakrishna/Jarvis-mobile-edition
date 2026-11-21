@@ -10,6 +10,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const chatBox = document.getElementById("chat");
     const messageInput = document.getElementById("msg");
     const sendButton = document.getElementById("send");
+    const sendLabel = sendButton?.textContent?.trim() || "↑";
     const clearButton = document.getElementById("clear-btn");
     const micButton = document.getElementById("mic-btn");
     const settingsToggle = document.getElementById("settings-toggle");
@@ -52,9 +53,29 @@ document.addEventListener("DOMContentLoaded", () => {
     const BACKEND_HEALTH_URL = "https://jarvis-mobile-edition-alpha.vercel.app/api/health";
     const BACKEND_COMMAND_URL = "https://jarvis-mobile-edition-alpha.vercel.app/api/command";
     const INTERACTION_URL = "https://jarvis-mobile-edition-alpha.vercel.app/api/interaction/analyze";
-    function conversationPreferences() { try { return Object.assign({}, JSON.parse(localStorage.getItem("kalki.preferences") || "{}"), JSON.parse(localStorage.getItem("kalki.conversation") || "{}")); } catch (_) { return {}; } }
+
+    function conversationPreferences() {
+        try {
+            return Object.assign({}, JSON.parse(localStorage.getItem("kalki.preferences") || "{}"), JSON.parse(localStorage.getItem("kalki.conversation") || "{}"));
+        } catch (_) { return {}; }
+    }
+
     async function analyzeInteraction(text) {
-        try { const prefs = conversationPreferences(); const r = await fetch(INTERACTION_URL, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({text, messages:readMemory().slice(-12), profile:{displayName:prefs.name||"", language:prefs.language||"auto", responseStyle:prefs.style||"short"}, preferences:{askFollowUps:prefs.followUps !== false}})}); return r.ok ? await r.json() : null; } catch (_) { return null; }
+        try {
+            const prefs = conversationPreferences();
+            const r = await fetch(INTERACTION_URL, {
+                method: "POST",
+                signal: AbortSignal.timeout(5000),
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    text,
+                    messages: readMemory().slice(-12),
+                    profile: { displayName: prefs.name || "", language: prefs.language || "auto", responseStyle: prefs.style || "short" },
+                    preferences: { askFollowUps: prefs.followUps !== false }
+                })
+            });
+            return r.ok ? await r.json() : null;
+        } catch (_) { return null; }
     }
 
     async function sendBackendCommand(text) {
@@ -78,7 +99,8 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    // Fallback models: first one busy ayithe next model try avutundi
+    // Fallback models: if the first is busy, the next one is tried.
+    // Verify these exact names in Google AI Studio.
     const MODEL_NAMES = [
         "gemini-3.6-flash",
         "gemini-3.5-flash",
@@ -90,17 +112,17 @@ document.addEventListener("DOMContentLoaded", () => {
 
     function readMemory() {
         try {
-            return JSON.parse(localStorage.getItem(MEMORY_KEY) || "[]");
+            const data = JSON.parse(localStorage.getItem(MEMORY_KEY) || "[]");
+            return Array.isArray(data) ? data : [];
         } catch (error) {
             return [];
         }
     }
 
     function saveMemory(memory) {
-        localStorage.setItem(
-            MEMORY_KEY,
-            JSON.stringify(memory.slice(-30))
-        );
+        try {
+            localStorage.setItem(MEMORY_KEY, JSON.stringify(memory.slice(-30)));
+        } catch (_) { /* Storage full or blocked; chat still works for this session. */ }
     }
 
     function addToMemory(sender, text, type) {
@@ -227,16 +249,17 @@ document.addEventListener("DOMContentLoaded", () => {
             throw new Error("API key enter cheyyaledu.");
         }
 
+        // Exclude SYSTEM error lines and make sure history starts with a user turn.
         const contents = readMemory()
-            .filter((item) => item.type === "user" || item.type === "ai")
+            .filter((item) => (item.type === "user" || item.type === "ai") && item.sender !== "SYSTEM" && item.text)
             .slice(-20)
             .map((item) => ({
                 role: item.type === "user" ? "user" : "model",
                 parts: [{ text: item.text }]
             }));
+        while (contents.length && contents[0].role !== "user") contents.shift();
 
-        const apiBase =
-            "https://generativelanguage.googleapis.com/v1beta/models/";
+        const apiBase = "https://generativelanguage.googleapis.com/v1beta/models/";
 
         let lastError = "AI connection failed.";
 
@@ -260,19 +283,20 @@ document.addEventListener("DOMContentLoaded", () => {
                     })
                 });
 
-                const data = await response.json();
+                const data = await response.json().catch(() => ({}));
 
                 if (response.ok) {
-                    const reply =
-                        data?.candidates?.[0]?.content?.parts?.[0]?.text;
+                    const reply = (data?.candidates?.[0]?.content?.parts || [])
+                        .map((part) => part.text || "")
+                        .join("")
+                        .trim();
 
                     if (reply) return reply;
                     lastError = "AI nundi reply raledu.";
                     continue;
                 }
 
-                lastError =
-                    data?.error?.message || "AI connection failed.";
+                lastError = data?.error?.message || "AI connection failed.";
 
                 const temporaryProblem =
                     /high demand|temporar|quota|rate|unavailable|overload|busy|deprecated|not found/i;
@@ -348,7 +372,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Skill router: no background actions. A skill runs only after an explicit command.
     const SKILL_REGISTRY = {
-        whatsapp: { name: "WhatsApp", keywords: /\bwhatsapp|message|reply|chat\b/i },
+        whatsapp: { name: "WhatsApp", keywords: /\b(whatsapp|message|reply|chat)\b/i },
         youtube: { name: "YouTube", keywords: /\b(youtube|video)\b/i },
         search: { name: "Web Search", keywords: /\b(search|google|web|news|weather)\b/i },
         email: { name: "Email", keywords: /\b(email|mail|gmail|outlook)\b/i },
@@ -369,7 +393,7 @@ document.addEventListener("DOMContentLoaded", () => {
             .find(([, skill]) => skill.keywords.test(text))?.[0] || null;
     }
     function normalizeVoiceStopPhrase(text) {
-        return String(text || "").normalize("NFC").toLowerCase()
+        return String(text || "").normalize("NFC").replace(/[’‘]/g, "'").toLowerCase()
             .replace(/^\s*(?:kalki|కల్కి)[,\s]*/i, "")
             .replace(/[.,!?;:…]+/g, " ")
             .replace(/\s+/g, " ").trim()
@@ -379,7 +403,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (/\b(time|what time|samayam)\b/i.test(text)) return "time";
         if (/\b(weather|temperature|varsham)\b/i.test(text)) return "weather";
         if (/\b(timer|countdown|alarm)\b/i.test(text)) return "timer";
-        if (/\b(dice|roll|coin|flip|head|tail)\b/i.test(text)) return "dice";
+        if (/\b(dice|roll|coin|flip)\b/i.test(text)) return "dice";
         if (/\b(joke|funny)\b/i.test(text)) return "joke";
         if (/\b(motivat|inspire|quote)\b/i.test(text)) return "motivation";
         if (/\b(tech news|ai news)\b/i.test(text)) return "techNews";
@@ -610,7 +634,12 @@ document.addEventListener("DOMContentLoaded", () => {
                 showMessage("KALKI", result.message || "Command received.", "ai");
                 if (result.url && result.executed && (result.tool === "openYouTube" || result.tool === "openGoogle" || result.tool === "youtubeSearch" || result.tool === "wikipedia")) window.open(result.url, "_blank", "noopener");
                 if (result.notify && result.seconds) {
-                    window.setTimeout(() => { const text = "⏰ Timer complete!"; showMessage("KALKI", text, "ai"); if (!ttsAutoRead?.checked && !voiceConversationActive) speak(text); if (window.Notification && Notification.permission === "granted") new Notification("KALKI", { body: text }); }, result.seconds * 1000);
+                    window.setTimeout(() => {
+                        const text = "⏰ Timer complete!";
+                        showMessage("KALKI", text, "ai");
+                        if (!ttsAutoRead?.checked && !voiceConversationActive) speak(text);
+                        if (window.Notification && Notification.permission === "granted") new Notification("KALKI", { body: text });
+                    }, result.seconds * 1000);
                     if (window.Notification && Notification.permission === "default") Notification.requestPermission().catch(() => {});
                 } else if (result.speak && !ttsAutoRead?.checked && !voiceConversationActive) speak(result.message || "Done");
             } catch (error) {
@@ -650,7 +679,7 @@ document.addEventListener("DOMContentLoaded", () => {
             publishKalkiAssistantState("idle");
             messageInput.disabled = false;
             sendButton.disabled = false;
-            sendButton.textContent = "SEND";
+            sendButton.textContent = sendLabel;
             finishVoiceTurn();
             if (!voiceConversationActive) messageInput.focus();
         }
@@ -658,7 +687,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     function clearChat() {
         stopSpeaking();
-        localStorage.removeItem(MEMORY_KEY);
+        try { localStorage.removeItem(MEMORY_KEY); } catch (_) { /* Storage blocked; clear the view only. */ }
         if (chatBox) chatBox.replaceChildren();
         document.body.classList.remove("has-conversation");
         if (messageInput) messageInput.value = "";
@@ -825,7 +854,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const dismiss = document.getElementById("share-dismiss");
         if (!preview) return;
         let shared = null;
-        function clearPreview() { shared = null; preview.hidden = true; if (files) files.replaceChildren(); }
+        function clearPreview() { shared = null; preview.hidden = true; delete preview.dataset.restore; if (files) files.replaceChildren(); }
         dismiss?.addEventListener("click", clearPreview);
         document.querySelectorAll("[data-share-action]").forEach((button) => button.addEventListener("click", () => {
             if (!shared) return;
@@ -1016,5 +1045,5 @@ document.addEventListener("DOMContentLoaded", () => {
     loadSavedChat();
     refreshApiKeyStatus();
     checkBackendStatus();
-    console.log("JARVIS AI fallback system loaded successfully.");
+    console.log("KALKI AI fallback system loaded successfully.");
 });
