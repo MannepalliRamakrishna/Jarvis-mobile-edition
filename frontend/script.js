@@ -1,4 +1,3 @@
-
 window.kalkiAssistantState = window.kalkiAssistantState || "idle";
 window.kalkiVoiceState = window.kalkiVoiceState || { active: false, listening: false, processing: false, status: "" };
 function publishKalkiAssistantState(state) {
